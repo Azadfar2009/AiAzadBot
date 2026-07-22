@@ -1,3 +1,4 @@
+import asyncio  # اضافه شد
 import logging
 import os
 import threading
@@ -63,8 +64,8 @@ async def start_command(update: Update, context):
 async def cancel_command(update: Update, context):
     await update.message.reply_text("لغو شد.")
 
-# ========== تابع اصلی ==========
-def main():
+# ========== تابع اصلی (به صورت async) ==========
+async def main():  # این خط تغییر کرده
     if not TELEGRAM_BOT_TOKEN:
         logging.error("TELEGRAM_BOT_TOKEN یافت نشد!")
         return
@@ -104,8 +105,8 @@ def main():
     thread = threading.Thread(target=run_web_server, daemon=True)
     thread.start()
 
-    # ======== اجرای پولینگ تلگرام ========
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # ======== اجرای پولینگ تلگرام (با await) ========
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)  # این خط تغییر کرده
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())  # این خط تغییر کرده
