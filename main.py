@@ -2,10 +2,19 @@ import asyncio
 import logging
 import os
 import threading
+import json
+import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+
+# ========== تنظیمات لاگ ==========
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ========== تنظیمات اولیه ==========
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -45,7 +54,7 @@ def get_available_models():
     if GROQ_API_KEY:
         models.append(("Groq", "groq"))
     if XAI_API_KEY:
-        models.append(("Grok", "grok"))
+        models.append(("Grok (xAI)", "grok"))
     if ZAI_API_KEY:
         models.append(("Z.ai", "zai"))
     return models
@@ -109,71 +118,89 @@ async def handle_message(update: Update, context):
         return
     
     user_message = update.message.text
+    logger.info(f"پیام دریافتی از {user_id}: {user_message} (مدل: {selected_model})")
     
     # ======== اتصال به APIهای مختلف ========
     try:
         if selected_model == "groq":
-            # اتصال به Groq
-            import httpx
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-                    json={
-                        "model": "llama-3.1-70b-versatile",
-                        "messages": [{"role": "user", "content": user_message}]
-                    },
-                    timeout=30
-                )
-                result = response.json()
-                reply = result.get("choices", [{}])[0].get("message", {}).get("content", "خطا در دریافت پاسخ.")
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "llama-3.1-70b-versatile",
+                "messages": [{"role": "user", "content": user_message}]
+            }
         
         elif selected_model == "grok":
-            # اتصال به Grok (xAI)
-            import httpx
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://api.x.ai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {XAI_API_KEY}"},
-                    json={
-                        "model": "grok-2-1212",
-                        "messages": [{"role": "user", "content": user_message}]
-                    },
-                    timeout=30
-                )
-                result = response.json()
-                reply = result.get("choices", [{}])[0].get("message", {}).get("content", "خطا در دریافت پاسخ.")
+            url = "https://api.x.ai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {XAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "grok-2-1212",
+                "messages": [{"role": "user", "content": user_message}]
+            }
         
         elif selected_model == "zai":
-            # اتصال به Z.ai
-            import httpx
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://api.z.ai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {ZAI_API_KEY}"},
-                    json={
-                        "model": "zai-1",
-                        "messages": [{"role": "user", "content": user_message}]
-                    },
-                    timeout=30
-                )
-                result = response.json()
-                reply = result.get("choices", [{}])[0].get("message", {}).get("content", "خطا در دریافت پاسخ.")
+            url = "https://api.z.ai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {ZAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "zai-1",
+                "messages": [{"role": "user", "content": user_message}]
+            }
         
         else:
-            reply = "مدل انتخاب شده نامعتبر است."
+            await update.message.reply_text("مدل انتخاب شده نامعتبر است.")
+            return
         
-        await update.message.reply_text(reply)
+        logger.info(f"ارسال درخواست به {url}")
+        logger.info(f"Payload: {json.dumps(payload)}")
         
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            
+            logger.info(f"Status Code: {response.status_code}")
+            logger.info(f"Response Text: {response.text[:500]}")
+            
+            if response.status_code != 200:
+                await update.message.reply_text(
+                    f"خطا در ارتباط با API (کد {response.status_code}):\n"
+                    f"{response.text[:200]}"
+                )
+                return
+            
+            result = response.json()
+            reply = result.get("choices", [{}])[0].get("message", {}).get("content", "خطا در دریافت پاسخ.")
+            
+            if not reply:
+                reply = "پاسخی از سمت API دریافت نشد. لطفاً دوباره تلاش کنید."
+            
+            await update.message.reply_text(reply)
+        
+    except httpx.TimeoutException:
+        logger.error("Timeout در ارتباط با API")
+        await update.message.reply_text("زمان پاسخ‌دهی API به پایان رسید. لطفاً دوباره تلاش کنید.")
+    except json.JSONDecodeError as e:
+        logger.error(f"خطا در پردازش JSON: {e}")
+        await update.message.reply_text(f"پاسخ دریافتی معتبر نیست: {str(e)[:100]}")
     except Exception as e:
-        logging.error(f"خطا در ارتباط با API: {e}")
-        await update.message.reply_text(f"خطا در ارتباط با API: {str(e)}")
+        logger.error(f"خطای ناشناخته: {e}")
+        await update.message.reply_text(f"خطا در ارتباط با API: {str(e)[:200]}")
 
 # ========== تابع اصلی ==========
 def main():
     if not TELEGRAM_BOT_TOKEN:
-        logging.error("TELEGRAM_BOT_TOKEN یافت نشد!")
+        logger.error("TELEGRAM_BOT_TOKEN یافت نشد!")
         return
+
+    logger.info("ربات در حال راه‌اندازی...")
+    logger.info(f"مدل‌های فعال: {[m[0] for m in get_available_models()]}")
 
     application = (
         Application.builder()
@@ -189,25 +216,32 @@ def main():
     # ======== راه‌اندازی Scheduler ========
     scheduler = BackgroundScheduler()
     scheduler.start()
+    logger.info("Scheduler راه‌اندازی شد.")
 
     # ======== راه‌اندازی وب‌سرویس Flask در یک ترد جداگانه ========
     thread = threading.Thread(target=run_web_server, daemon=True)
     thread.start()
+    logger.info("وب‌سرویس Flask در ترد جداگانه راه‌اندازی شد.")
 
     # ======== راه‌اندازی ربات ========
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     try:
+        logger.info("در حال پاک کردن Webhook قبلی...")
         loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
+        logger.info("Webhook پاک شد. شروع پولینگ...")
         loop.run_until_complete(application.run_polling(allowed_updates=Update.ALL_TYPES))
     except KeyboardInterrupt:
-        logging.info("ربات توسط کاربر متوقف شد.")
+        logger.info("ربات توسط کاربر متوقف شد.")
+    except Exception as e:
+        logger.error(f"خطا در اجرای ربات: {e}")
     finally:
         try:
             loop.run_until_complete(application.shutdown())
+            logger.info("ربات به درستی خاموش شد.")
         except Exception as e:
-            logging.warning(f"خطا در زمان خاموش کردن: {e}")
+            logger.warning(f"خطا در زمان خاموش کردن اپلیکیشن: {e}")
         finally:
             loop.close()
 
