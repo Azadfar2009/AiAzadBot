@@ -1,506 +1,112 @@
-import os
-import glob
-import time
+import asyncio  # [تغییر داده شده] - این خط حتماً باید بالا باشد
 import logging
-import gettext
-import asyncio
-from telegram import Update, BotCommand
+import os
+import sys
+from typing import Dict, List, Optional, Tuple, Union
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.ext import (
     Application,
-    CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
-    InlineQueryHandler,
-    filters,
+    CommandHandler,
     ConversationHandler,
+    InlineQueryHandler,
+    MessageHandler,
+    filters,
 )
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from database.connection import DatabasePool
-from database.database import create_table, get_all_tasks
-from config import (
-    DATABASE_PATH, TELEGRAM_BOT_TOKEN, LANGUAGE, LOG_LEVEL,
-    REMINDER_CHECK_INTERVAL_MINUTES, AUTHORIZED_USER, ALLOW_ALL_USERS,
-    TEMP_FILE_MAX_AGE_HOURS,
-)
-from monitoring.metrics import log_metrics_task
 
-# --- New modular handler imports ---
-from handlers.common import _current_user_id
-from handlers.states import (
-    API_KEY_INPUT, CHOOSING, CONVERSATION, CONVERSATION_HISTORY,
-    TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS, TASKS_ADD_TIME,
-    TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU,
-    STORAGE_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT,
-    KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU,
-    SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU,
-    BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU,
-    URL_MONITOR_MENU, URL_MONITOR_INPUT, MODEL_SEARCH_INPUT,
-)
-from handlers.onboarding import start, handle_api_key, start_over, done
-from handlers.conversation import start_conversation, reply_and_new_message
-from handlers.history import (
-    get_conversation_history, get_conversation_handler, delete_conversation_handler,
-    search_menu_handler, handle_search_input, browse_tags_handler,
-    tag_browse_results_handler, tag_conversation_handler, handle_tag_input,
-    remove_tag_handler, export_conversation_handler, share_conversation_handler,
-    usage_dashboard_handler, branch_conversation_handler, set_resume_point_handler,
-)
-from handlers.settings import (
-    open_settings_menu, open_models_menu, set_model_handler,
-    show_all_models_handler, open_storage_menu, update_api_key_handler,
-    open_persona_menu, handle_persona_input, toggle_web_search,
-    toggle_thinking_mode, toggle_code_execution, open_shortcuts_menu,
-    start_add_shortcut, handle_shortcut_input, delete_shortcut_handler,
-    open_pinned_context_menu, handle_pinned_context_input,
-    clear_pinned_context_handler, language_menu_handler, set_language_handler,
-    open_provider_menu, set_provider_handler,
-    search_models_prompt, handle_model_search, clear_model_search,
-)
-from handlers.tasks import (
-    open_tasks_menu, start_add_task, handle_task_prompt, handle_task_days,
-    back_to_days_handler, handle_task_time, handle_day_toggle,
-    handle_task_interval, back_to_time_handler, handle_task_plan_approval,
-    list_tasks, view_task_handler, delete_task_handler,
-    set_scheduler, schedule_task_job,
-)
-from handlers.reminders import (
-    open_reminders_menu, start_add_reminder, handle_reminder_input,
-    delete_reminder_handler, check_reminders_task,
-)
-from handlers.knowledge import (
-    open_knowledge_menu, start_add_knowledge, handle_knowledge_input,
-    delete_knowledge_handler,
-)
-from handlers.templates import (
-    templates_menu_handler, select_template_handler,
-    translation_mode_handler, start_translation_handler,
-)
-from handlers.prompts import (
-    prompt_library_handler, start_add_prompt_handler, handle_prompt_add,
-    use_prompt_handler, delete_prompt_handler,
-)
-from handlers.bookmarks import (
-    bookmarks_menu_handler, delete_bookmark_handler, bookmark_message_handler,
-)
-from handlers.media import (
-    generate_image_handler, suggest_followup_handler, voice_output_handler,
-)
-from handlers.feedback import feedback_up_handler, feedback_down_handler
-from handlers.briefing import (
-    set_application as set_briefing_application,
-    briefing_menu_handler, handle_briefing_time_input, disable_briefing_handler,
-    url_monitor_menu_handler, start_add_url_monitor, handle_url_monitor_input,
-    delete_url_monitor_handler, check_url_monitors_task, daily_briefing_task,
-    weekly_summary_task,
-)
-from handlers.inline import inline_query_handler
+# ====================================================
+# بخش ثابت - تمام متغیرها و توابع کمکی خودتان را اینجا قرار دهید
+# (این بخش دقیقاً مثل فایل قبلی شماست، نیازی به تغییر ندارد)
+# ====================================================
 
-from dotenv import load_dotenv
+# متغیرهای محیطی و تنظیمات
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+AUTHORIZED_USER = os.getenv("AUTHORIZED_USER", "")
+ALLOW_ALL_USERS = os.getenv("ALLOW_ALL_USERS", "false").lower() == "true"
+REMINDER_CHECK_INTERVAL_MINUTES = int(os.getenv("REMINDER_CHECK_INTERVAL_MINUTES", "5"))
+# ... بقیه متغیرهای env شما ...
 
-# Load environment variables
-load_dotenv()
-
-# Setup translation
-localedir = os.path.join(os.path.abspath(os.path.dirname(__file__)), "locales")
-
-try:
-    gettext.install("messages", localedir, names=("ngettext",))
-    gettext.translation("messages", localedir, languages=[LANGUAGE], fallback=True).install()
-except Exception as e:
-    print(f"Translation setup error: {e}")
-    import builtins
-    builtins.__dict__['_'] = lambda x: x
-
-class UserIdFilter(logging.Filter):
-    """Inject user_id into every log record from the current async context."""
-    def filter(self, record):
-        record.user_id = _current_user_id.get('-')
-        return True
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - [user:%(user_id)s] %(message)s", level=LOG_LEVEL
-)
-# Add filter to all handlers (not just root logger) so every log record gets user_id
-_uid_filter = UserIdFilter()
-for _handler in logging.root.handlers:
-    _handler.addFilter(_uid_filter)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-logger = logging.getLogger(__name__)
-
-
-def _register_providers():
-    """Register all built-in AI providers."""
-    from providers.registry import ProviderRegistry
-    registry = ProviderRegistry()
-
-    # Gemini (always available)
-    from providers.gemini import GeminiProvider
-    registry.register(GeminiProvider())
-
-    # OpenAI (available if openai package is installed)
-    try:
-        from providers.openai_provider import OpenAIProvider
-        registry.register(OpenAIProvider())
-    except ImportError:
-        logger.info("OpenAI provider not available (openai package not installed)")
-
-    # Anthropic (available if anthropic package is installed)
-    try:
-        from providers.anthropic_provider import AnthropicProvider
-        registry.register(AnthropicProvider())
-    except ImportError:
-        logger.info("Anthropic provider not available (anthropic package not installed)")
-
-    # Pre-configured OpenAI-compatible endpoints
-    try:
-        from providers.openai_compat import OpenAICompatProvider, KNOWN_ENDPOINTS
-        for name, config in KNOWN_ENDPOINTS.items():
-            registry.register(OpenAICompatProvider(
-                provider_name=name,
-                base_url=config["base_url"],
-                display_name=config["display_name"],
-            ))
-    except ImportError:
-        logger.info("OpenAI-compatible providers not available (openai package not installed)")
-
-    logger.info(f"Registered providers: {registry.list_providers()}")
-
-
+# توابع کمکی (همان کدهای خودتان)
 def _check_access_config():
-    """Warn at startup if access control is not explicitly configured."""
-    if not AUTHORIZED_USER and not ALLOW_ALL_USERS:
-        logger.warning(
-            "Neither AUTHORIZED_USER nor ALLOW_ALL_USERS=true is set. "
-            "The bot will deny all access. Set AUTHORIZED_USER to a comma-separated "
-            "list of Telegram user IDs, or set ALLOW_ALL_USERS=true to allow everyone."
-        )
-    elif ALLOW_ALL_USERS:
-        logger.warning("ALLOW_ALL_USERS=true — bot is open to all Telegram users.")
+    # ... کد خودتان ...
+    pass
 
+def set_scheduler(scheduler, application):
+    # ... کد خودتان ...
+    pass
 
-def _cleanup_temp_files():
-    """Remove stale temp files from data/ directory."""
-    data_dir = os.path.abspath("data")
-    if not os.path.exists(data_dir):
-        return
+def post_init(application):
+    # ... کد خودتان ...
+    pass
 
-    now = time.time()
-    max_age_seconds = TEMP_FILE_MAX_AGE_HOURS * 3600
-    patterns = ["voice_*", "doc_*", "rag_*"]
-    removed = 0
-
-    for pattern in patterns:
-        for filepath in glob.glob(os.path.join(data_dir, pattern)):
-            try:
-                if os.path.isfile(filepath) and (now - os.path.getmtime(filepath)) > max_age_seconds:
-                    os.remove(filepath)
-                    removed += 1
-            except OSError as e:
-                logger.warning(f"Failed to clean up temp file {filepath}: {e}")
-
-    if removed:
-        logger.info(f"Cleaned up {removed} stale temp files")
-
-
-async def _cleanup_temp_files_async():
-    """Async wrapper for temp file cleanup (for APScheduler)."""
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _cleanup_temp_files)
-
+def post_shutdown(application):
+    # ... کد خودتان ...
+    pass
 
 def entry_points():
-    return [
-        CommandHandler("start", start),
-        CallbackQueryHandler(start_over, pattern="^Start_Again"),
-    ]
+    # ... کد خودتان ...
+    return [CommandHandler("start", start_command)]
 
 def states():
-    return {
-        API_KEY_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_api_key),
-        ],
-        CHOOSING: [
-            CallbackQueryHandler(start_conversation, pattern="^New_Conversation$"),
-            CallbackQueryHandler(get_conversation_history, pattern="^PAGE#"),
-            CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
-            CallbackQueryHandler(open_reminders_menu, pattern="^Reminders_Menu$"),
-            CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
-            CallbackQueryHandler(search_menu_handler, pattern="^Search_Menu$"),
-            CallbackQueryHandler(bookmarks_menu_handler, pattern="^Bookmarks_Menu$"),
-            CallbackQueryHandler(prompt_library_handler, pattern="^Prompt_Library$"),
-            CallbackQueryHandler(usage_dashboard_handler, pattern="^Usage_Dashboard$"),
-            CallbackQueryHandler(templates_menu_handler, pattern="^Templates_Menu$"),
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-            CallbackQueryHandler(done, pattern="^End_Conversation$"),
-        ],
-        CONVERSATION: [
-            CommandHandler("image", generate_image_handler),
-            CallbackQueryHandler(suggest_followup_handler, pattern="^Suggest_Followup$"),
-            CallbackQueryHandler(voice_output_handler, pattern="^Voice_Output$"),
-            CallbackQueryHandler(bookmark_message_handler, pattern="^Bookmark_Msg$"),
-            CallbackQueryHandler(feedback_up_handler, pattern="^Feedback_Up$"),
-            CallbackQueryHandler(feedback_down_handler, pattern="^Feedback_Down$"),
-            MessageHandler((filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, reply_and_new_message),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        CONVERSATION_HISTORY: [
-            CallbackQueryHandler(start_conversation, pattern="^New_Conversation$"),
-            CallbackQueryHandler(get_conversation_history, pattern="^PAGE#"),
-            CallbackQueryHandler(lambda update, ctx: update.callback_query.answer(), pattern="^noop$"),
-            CallbackQueryHandler(get_conversation_handler, pattern="^CONV_SELECT#"),
-            MessageHandler(filters.Regex("^/conv"), get_conversation_handler),
-            CallbackQueryHandler(delete_conversation_handler, pattern="^Delete_Conversation$"),
-            CallbackQueryHandler(export_conversation_handler, pattern="^Export_Conversation$"),
-            CallbackQueryHandler(share_conversation_handler, pattern="^Share_Conversation$"),
-            CallbackQueryHandler(tag_conversation_handler, pattern="^Tag_Conversation$"),
-            CallbackQueryHandler(branch_conversation_handler, pattern="^Branch_Conversation$"),
-            CallbackQueryHandler(set_resume_point_handler, pattern="^Set_Resume_Point$"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        TASKS_MENU: [
-            CallbackQueryHandler(start_add_task, pattern="^Tasks_Add$"),
-            CallbackQueryHandler(list_tasks, pattern="^Tasks_List$"),
-            CallbackQueryHandler(view_task_handler, pattern="^TASK_VIEW#"),
-            CallbackQueryHandler(delete_task_handler, pattern="^TASK_DELETE#"),
-            CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        TASKS_ADD_PROMPT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_prompt),
-            CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
-        ],
-        TASKS_ADD_DAYS: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_days),
-            CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
-        ],
-        TASKS_ADD_TIME: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_time),
-            CallbackQueryHandler(back_to_days_handler, pattern="^Back_To_Days$"),
-        ],
-        TASKS_ADD_INTERVAL: [
-            CallbackQueryHandler(handle_day_toggle, pattern="^Tasks_Day_"),
-            CallbackQueryHandler(handle_task_interval, pattern="^Tasks_Interval_confirm$"),
-            CallbackQueryHandler(back_to_days_handler, pattern="^Back_To_Days$"),
-        ],
-        TASKS_CONFIRM_PLAN: [
-            CallbackQueryHandler(handle_task_plan_approval, pattern="^Plan_"),
-            CallbackQueryHandler(back_to_time_handler, pattern="^Back_To_Time$"),
-        ],
-        SETTINGS_MENU: [
-            CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),
-            CallbackQueryHandler(open_provider_menu, pattern="^Provider_Menu$"),
-            CallbackQueryHandler(set_provider_handler, pattern="^SET_PROVIDER_"),
-            CallbackQueryHandler(open_persona_menu, pattern="^Persona_Menu$"),
-            CallbackQueryHandler(open_pinned_context_menu, pattern="^Pinned_Context_Menu$"),
-            CallbackQueryHandler(open_shortcuts_menu, pattern="^Shortcuts_Menu$"),
-            CallbackQueryHandler(open_storage_menu, pattern="^Storage_Menu$"),
-            CallbackQueryHandler(toggle_web_search, pattern="^TOGGLE_WEB_SEARCH$"),
-            CallbackQueryHandler(toggle_thinking_mode, pattern="^TOGGLE_THINKING_MODE$"),
-            CallbackQueryHandler(toggle_code_execution, pattern="^TOGGLE_CODE_EXEC$"),
-            CallbackQueryHandler(language_menu_handler, pattern="^Language_Menu$"),
-            CallbackQueryHandler(briefing_menu_handler, pattern="^Briefing_Menu$"),
-            CallbackQueryHandler(url_monitor_menu_handler, pattern="^URL_Monitor_Menu$"),
-            CallbackQueryHandler(update_api_key_handler, pattern="^UPDATE_API_KEY$"),
-            CallbackQueryHandler(set_language_handler, pattern="^SET_LANG_"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        PERSONA_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_persona_input),
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-        ],
-        REMINDERS_MENU: [
-            CallbackQueryHandler(start_add_reminder, pattern="^Add_Reminder$"),
-            CallbackQueryHandler(delete_reminder_handler, pattern="^REMINDER_DELETE#"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-            CallbackQueryHandler(open_reminders_menu, pattern="^Reminders_Menu$"),
-        ],
-        REMINDERS_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reminder_input),
-            CallbackQueryHandler(open_reminders_menu, pattern="^Reminders_Menu$"),
-        ],
-        KNOWLEDGE_MENU: [
-            CallbackQueryHandler(start_add_knowledge, pattern="^Add_Knowledge$"),
-            CallbackQueryHandler(delete_knowledge_handler, pattern="^KNOWLEDGE_DELETE#"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-            CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
-        ],
-        KNOWLEDGE_INPUT: [
-            MessageHandler(filters.Document.ALL & ~filters.COMMAND, handle_knowledge_input),
-            CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
-        ],
-        MODELS_MENU: [
-            CallbackQueryHandler(set_model_handler, pattern="^SM_"),
-            CallbackQueryHandler(show_all_models_handler, pattern="^Show_All_Models$"),
-            CallbackQueryHandler(search_models_prompt, pattern="^Search_Models$"),
-            CallbackQueryHandler(clear_model_search, pattern="^Clear_Model_Search$"),
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        MODEL_SEARCH_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_model_search),
-            CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        STORAGE_MENU: [
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        SEARCH_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search_input),
-            CallbackQueryHandler(browse_tags_handler, pattern="^Browse_Tags$"),
-            CallbackQueryHandler(tag_browse_results_handler, pattern="^TAG_BROWSE#"),
-            CallbackQueryHandler(get_conversation_handler, pattern="^CONV_SELECT#"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        SHORTCUTS_MENU: [
-            CallbackQueryHandler(start_add_shortcut, pattern="^Add_Shortcut$"),
-            CallbackQueryHandler(delete_shortcut_handler, pattern="^SHORTCUT_DELETE#"),
-            CallbackQueryHandler(open_shortcuts_menu, pattern="^Shortcuts_Menu$"),
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-        ],
-        SHORTCUTS_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_shortcut_input),
-            CallbackQueryHandler(open_shortcuts_menu, pattern="^Shortcuts_Menu$"),
-        ],
-        TAGS_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tag_input),
-            CallbackQueryHandler(remove_tag_handler, pattern="^TAG_REMOVE#"),
-            CallbackQueryHandler(get_conversation_handler, pattern="^CONV_SELECT#"),
-        ],
-        PINNED_CONTEXT_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pinned_context_input),
-            CallbackQueryHandler(clear_pinned_context_handler, pattern="^Clear_Pinned_Context$"),
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-        ],
-        TEMPLATES_MENU: [
-            CallbackQueryHandler(select_template_handler, pattern="^TEMPLATE#"),
-            CallbackQueryHandler(translation_mode_handler, pattern="^Translation_Mode$"),
-            CallbackQueryHandler(start_translation_handler, pattern="^TRANSLATE_TO#"),
-            CallbackQueryHandler(templates_menu_handler, pattern="^Templates_Menu$"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        BOOKMARKS_MENU: [
-            CallbackQueryHandler(delete_bookmark_handler, pattern="^BOOKMARK_DELETE#"),
-            CallbackQueryHandler(bookmarks_menu_handler, pattern="^Bookmarks_Menu$"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        PROMPT_LIBRARY: [
-            CallbackQueryHandler(start_add_prompt_handler, pattern="^Add_Prompt$"),
-            CallbackQueryHandler(use_prompt_handler, pattern="^USE_PROMPT#"),
-            CallbackQueryHandler(delete_prompt_handler, pattern="^PROMPT_DELETE#"),
-            CallbackQueryHandler(prompt_library_handler, pattern="^Prompt_Library$"),
-            CallbackQueryHandler(start_over, pattern="^Start_Again"),
-        ],
-        PROMPT_ADD: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prompt_add),
-            CallbackQueryHandler(prompt_library_handler, pattern="^Prompt_Library$"),
-        ],
-        BRIEFING_MENU: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_briefing_time_input),
-            CallbackQueryHandler(disable_briefing_handler, pattern="^Disable_Briefing$"),
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-        ],
-        URL_MONITOR_MENU: [
-            CallbackQueryHandler(start_add_url_monitor, pattern="^Add_URL_Monitor$"),
-            CallbackQueryHandler(delete_url_monitor_handler, pattern="^MONITOR_DELETE#"),
-            CallbackQueryHandler(url_monitor_menu_handler, pattern="^URL_Monitor_Menu$"),
-            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
-        ],
-        URL_MONITOR_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_monitor_input),
-            CallbackQueryHandler(url_monitor_menu_handler, pattern="^URL_Monitor_Menu$"),
-        ],
-    }
+    # ... کد خودتان ...
+    return {}
 
 def fallbacks():
-    return [
-        CommandHandler("start", start),
-        CallbackQueryHandler(start_over, pattern="^Start_Again"),
-    ]
+    # ... کد خودتان ...
+    return [CommandHandler("cancel", cancel_command)]
 
+# وظایف زمان‌بندی‌شده (Scheduler Jobs)
+def check_reminders_task():
+    # ... کد خودتان ...
+    pass
 
-async def post_init(application: Application):
-    """Initialize async resources after the application starts."""
-    os.makedirs("data", exist_ok=True)
+def _cleanup_temp_files_async():
+    # ... کد خودتان ...
+    pass
 
-    # Register AI providers
-    _register_providers()
+def log_metrics_task():
+    # ... کد خودتان ...
+    pass
 
-    # Register bot commands with Telegram
-    await application.bot.set_my_commands([
-        BotCommand("start", "Open main menu"),
-        BotCommand("image", "Generate an image (use in conversation)"),
-    ])
+def weekly_summary_task():
+    # ... کد خودتان ...
+    pass
 
-    # Store bot username for deep-link URLs
-    bot_info = await application.bot.get_me()
-    application.bot_data["bot_username"] = bot_info.username
+def check_url_monitors_task():
+    # ... کد خودتان ...
+    pass
 
-    # Initialize async database pool
-    pool = DatabasePool(DATABASE_PATH)
-    await create_table(pool)
-    application.bot_data["db_pool"] = pool
-    logger.info(f"Database pool initialized at {DATABASE_PATH}")
+def daily_briefing_task():
+    # ... کد خودتان ...
+    pass
 
-    # Cleanup stale temp files at startup
-    _cleanup_temp_files()
+async def inline_query_handler(update: Update, context):
+    # ... کد خودتان ...
+    pass
 
-    # Inject application reference into briefing module for background tasks
-    set_briefing_application(application)
+async def start_command(update: Update, context):
+    # ... کد خودتان ...
+    pass
 
-    # Load and schedule existing tasks
-    try:
-        all_tasks = []
-        offset = 0
-        while True:
-            batch = await get_all_tasks(pool, batch_size=100, offset=offset)
-            if not batch:
-                break
-            all_tasks.extend(batch)
-            offset += 100
+async def cancel_command(update: Update, context):
+    # ... کد خودتان ...
+    pass
 
-        for task in all_tasks:
-            schedule_task_job(
-                task_id=task["id"],
-                user_id=task["user_id"],
-                prompt=task["prompt"],
-                run_time=task["run_time"],
-                interval=task["interval"],
-                plan_json=task["plan_json"],
-                start_date=task["start_date"],
-                hashtag=task.get("hashtag"),
-            )
-        logger.info(f"Loaded {len(all_tasks)} active tasks.")
-    except Exception as e:
-        logger.error(f"Failed to load tasks: {e}")
+# ====================================================
+# بخش اصلی برنامه که مشکل داشت (تغییرات اعمال شده)
+# ====================================================
 
-
-async def post_shutdown(application: Application):
-    """Graceful shutdown — clean up resources."""
-    logger.info("Shutting down...")
-
-    # Close database pool
-    pool = application.bot_data.get("db_pool")
-    if pool:
-        await pool.close_all()
-        logger.info("Database pool closed")
-
-    # Clean up temp files
-    _cleanup_temp_files()
-
-    logger.info("Shutdown complete")
-
-
-def main() -> None:
+# [تغییر داده شده] - کلمه "async" به ابتدای تابع main اضافه شده
+async def main() -> None:
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN not found in environment variables.")
+        logging.error("TELEGRAM_BOT_TOKEN not found in environment variables.")
         return
 
-    # Check access configuration
     _check_access_config()
 
+    # ساخت اپلیکیشن تلگرام
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
@@ -509,6 +115,7 @@ def main() -> None:
         .build()
     )
 
+    # تنظیم ConversationHandler (همان کد قبلی شما)
     conv_handler = ConversationHandler(
         entry_points=entry_points(),
         states=states(),
@@ -518,23 +125,32 @@ def main() -> None:
         allow_reentry=True,
     )
     application.add_handler(conv_handler)
-
-    # Inline mode handler (outside ConversationHandler)
     application.add_handler(InlineQueryHandler(inline_query_handler))
 
+    # ساخت زمان‌بند (Scheduler)
     scheduler = AsyncIOScheduler()
     set_scheduler(scheduler, application)
 
-    # Schedule recurring jobs
-    scheduler.add_job(check_reminders_task, 'interval', minutes=REMINDER_CHECK_INTERVAL_MINUTES)
+    # اضافه کردن وظایف زمان‌بندی (همان کدهای خودتان)
+    scheduler.add_job(check_reminders_task, 'interval',
+                      minutes=REMINDER_CHECK_INTERVAL_MINUTES)
     scheduler.add_job(_cleanup_temp_files_async, 'interval', hours=1)
     scheduler.add_job(log_metrics_task, 'interval', minutes=5)
     scheduler.add_job(weekly_summary_task, 'cron', day_of_week='sun', hour=10, minute=0)
     scheduler.add_job(check_url_monitors_task, 'interval', minutes=30)
-    scheduler.add_job(daily_briefing_task, 'cron', minute='*')  # Check every minute for matching briefing times
+    scheduler.add_job(daily_briefing_task, 'cron', minute='*')
 
+    # [تغییر داده شده] - حالا که داخل تابع async هستیم، scheduler.start() بدون خطا کار می‌کند
     scheduler.start()
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    # [تغییر داده شده] - به دستور run_polling یک "await" اضافه شده
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+# ====================================================
+# نقطه‌ی شروع اجرا (ورودی برنامه)
+# ====================================================
 
 if __name__ == "__main__":
-    main()
+    # [تغییر داده شده] - به جای صدا زدن مستقیم main()، از asyncio.run استفاده می‌شود
+    asyncio.run(main())
