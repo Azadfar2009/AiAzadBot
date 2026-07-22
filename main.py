@@ -1,4 +1,4 @@
-import asyncio  # [تغییر داده شده] - این خط حتماً باید بالا باشد
+import asyncio
 import logging
 import os
 import sys
@@ -95,18 +95,16 @@ async def cancel_command(update: Update, context):
     pass
 
 # ====================================================
-# بخش اصلی برنامه که مشکل داشت (تغییرات اعمال شده)
+# تابع اصلی - بدون asyncio.run()
 # ====================================================
 
-# [تغییر داده شده] - کلمه "async" به ابتدای تابع main اضافه شده
-async def main() -> None:
+def main() -> None:
     if not TELEGRAM_BOT_TOKEN:
         logging.error("TELEGRAM_BOT_TOKEN not found in environment variables.")
         return
 
     _check_access_config()
 
-    # ساخت اپلیکیشن تلگرام
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
@@ -115,7 +113,6 @@ async def main() -> None:
         .build()
     )
 
-    # تنظیم ConversationHandler (همان کد قبلی شما)
     conv_handler = ConversationHandler(
         entry_points=entry_points(),
         states=states(),
@@ -127,11 +124,10 @@ async def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(InlineQueryHandler(inline_query_handler))
 
-    # ساخت زمان‌بند (Scheduler)
+    # ساخت زمان‌بند
     scheduler = AsyncIOScheduler()
     set_scheduler(scheduler, application)
 
-    # اضافه کردن وظایف زمان‌بندی (همان کدهای خودتان)
     scheduler.add_job(check_reminders_task, 'interval',
                       minutes=REMINDER_CHECK_INTERVAL_MINUTES)
     scheduler.add_job(_cleanup_temp_files_async, 'interval', hours=1)
@@ -140,17 +136,15 @@ async def main() -> None:
     scheduler.add_job(check_url_monitors_task, 'interval', minutes=30)
     scheduler.add_job(daily_briefing_task, 'cron', minute='*')
 
-    # [تغییر داده شده] - حالا که داخل تابع async هستیم، scheduler.start() بدون خطا کار می‌کند
-    scheduler.start()
+    # شروع کردن scheduler در حلقه‌ی رویداد جاری
+    # (این کار باید قبل از run_polling انجام بشه)
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(scheduler.start())
 
-    # [تغییر داده شده] - به دستور run_polling یک "await" اضافه شده
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # حالا run_polling رو صدا می‌زنیم - این تابع خودش حلقه‌ی رویداد رو مدیریت می‌کنه
+    # و تا زمانی که ربات متوقف نشه، به کار خودش ادامه میده
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-
-# ====================================================
-# نقطه‌ی شروع اجرا (ورودی برنامه)
-# ====================================================
 
 if __name__ == "__main__":
-    # [تغییر داده شده] - به جای صدا زدن مستقیم main()، از asyncio.run استفاده می‌شود
-    asyncio.run(main())
+    main()
