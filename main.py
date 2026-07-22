@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import threading
@@ -63,8 +64,8 @@ async def start_command(update: Update, context):
 async def cancel_command(update: Update, context):
     await update.message.reply_text("لغو شد.")
 
-# ========== تابع اصلی ==========
-def main():
+# ========== تابع اصلی (async) ==========
+async def main():
     if not TELEGRAM_BOT_TOKEN:
         logging.error("TELEGRAM_BOT_TOKEN یافت نشد!")
         return
@@ -104,21 +105,12 @@ def main():
     thread = threading.Thread(target=run_web_server, daemon=True)
     thread.start()
 
-    # ======== **تغییر اصلی اینجاست** ========
-    # قبل از شروع پولینگ، هر Webhook قبلی رو پاک می‌کنیم
-    # این کار از خطای Conflict (تداخل) جلوگیری می‌کنه
-    try:
-        # اجرای delete_webhook به صورت همگام (با استفاده از حلقه رویداد جاری)
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
-        loop.close()
-    except Exception as e:
-        logging.warning(f"خطا در پاک کردن Webhook: {e}")
+    # ======== پاک کردن Webhook قبل از شروع پولینگ ========
+    # این کار از خطای Conflict جلوگیری می‌کند
+    await application.bot.delete_webhook(drop_pending_updates=True)
 
     # ======== اجرای پولینگ تلگرام ========
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
