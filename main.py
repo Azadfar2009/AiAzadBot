@@ -1,15 +1,32 @@
 import asyncio
 import logging
 import os
-from apscheduler.schedulers.background import BackgroundScheduler  # تغییر مهم
+import threading
+from apscheduler.schedulers.background import BackgroundScheduler
+from flask import Flask, render_template
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ConversationHandler
 
-# ========== متغیرهای محیطی ==========
+# ========== تنظیمات اولیه ==========
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_USER = os.getenv("AUTHORIZED_USER", "")
 
-# ========== توابع شما (همان کدهای خودتون) ==========
+# ========== ساخت وب‌سرویس Flask ==========
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "ربات فعال است! ✅", 200
+
+@app_flask.route('/health')
+def health():
+    return "OK", 200
+
+def run_web_server():
+    port = int(os.environ.get('PORT', 8080))
+    app_flask.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+# ========== توابع ربات (همان کدهای خودتان) ==========
 def _check_access_config():
     # ... کد خودتان ...
     pass
@@ -27,15 +44,12 @@ def post_shutdown(application):
     pass
 
 def entry_points():
-    # ... کد خودتان ...
     return [CommandHandler("start", start_command)]
 
 def states():
-    # ... کد خودتان ...
     return {}
 
 def fallbacks():
-    # ... کد خودتان ...
     return [CommandHandler("cancel", cancel_command)]
 
 # وظایف زمانبندی
@@ -51,7 +65,7 @@ def log_metrics_task():
     # ... کد خودتان ...
     pass
 
-# ========== هندلرها ==========
+# ========== هندلرهای تلگرام ==========
 async def start_command(update: Update, context):
     await update.message.reply_text("ربات فعال است! ✅")
 
@@ -66,7 +80,7 @@ async def main():
 
     _check_access_config()
 
-    # ساخت اپلیکیشن
+    # ساخت اپلیکیشن تلگرام
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
@@ -86,24 +100,23 @@ async def main():
     )
     application.add_handler(conv_handler)
 
-    # ======== تغییر اصلی اینجاست ========
-    # استفاده از BackgroundScheduler به جای AsyncIOScheduler
+    # ======== راه‌اندازی Scheduler ========
     scheduler = BackgroundScheduler()
     set_scheduler(scheduler, application)
 
-    # اضافه کردن وظایف
     scheduler.add_job(check_reminders_task, 'interval', minutes=5)
     scheduler.add_job(_cleanup_temp_files, 'interval', hours=1)
     scheduler.add_job(log_metrics_task, 'interval', minutes=5)
     # ... بقیه jobها ...
 
-    # شروع scheduler (این تابع sync هست و در ترد جداگانه اجرا میشه)
     scheduler.start()
-    # ========================================
 
-    # اجرای پولینگ (همونطور که باید باشه)
+    # ======== راه‌اندازی وب‌سرویس Flask در یک ترد جداگانه ========
+    thread = threading.Thread(target=run_web_server, daemon=True)
+    thread.start()
+
+    # ======== اجرای پولینگ تلگرام ========
     await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-# ========== نقطه ورود ==========
 if __name__ == "__main__":
     asyncio.run(main())
