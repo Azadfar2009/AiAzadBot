@@ -23,8 +23,9 @@ ALLOW_ALL_USERS = os.getenv("ALLOW_ALL_USERS", "false").lower() == "true"
 
 # کلیدهای API
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-XAI_API_KEY = os.getenv("XAI_API_KEY")  # برای Grok
-ZAI_API_KEY = os.getenv("ZAI_API_KEY")
+XAI_API_KEY = os.getenv("XAI_API_KEY")          # برای Grok
+ZAI_API_KEY = os.getenv("ZAI_API_KEY")          # برای Z.ai
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # برای OpenRouter
 
 # ========== ساخت وب‌سرویس Flask ==========
 app_flask = Flask(__name__)
@@ -57,6 +58,8 @@ def get_available_models():
         models.append(("Grok (xAI)", "grok"))
     if ZAI_API_KEY:
         models.append(("Z.ai", "zai"))
+    if OPENROUTER_API_KEY:
+        models.append(("OpenRouter", "openrouter"))
     return models
 
 # ========== هندلرهای تلگرام ==========
@@ -96,7 +99,8 @@ async def model_selection(update: Update, context):
     model_names = {
         "groq": "Groq",
         "grok": "Grok (xAI)",
-        "zai": "Z.ai"
+        "zai": "Z.ai",
+        "openrouter": "OpenRouter"
     }
     
     await query.edit_message_text(
@@ -155,13 +159,27 @@ async def handle_message(update: Update, context):
                 "messages": [{"role": "user", "content": user_message}]
             }
         
+        elif selected_model == "openrouter":
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://aiazadbot.onrender.com",
+                "X-Title": "AzadAIBot"
+            }
+            payload = {
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": user_message}]
+            }
+        
         else:
             await update.message.reply_text("مدل انتخاب شده نامعتبر است.")
             return
         
         logger.info(f"ارسال درخواست به {url}")
+        logger.info(f"Payload: {json.dumps(payload)}")
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(url, headers=headers, json=payload)
             
             logger.info(f"Status Code: {response.status_code}")
