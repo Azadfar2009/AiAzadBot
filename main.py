@@ -24,6 +24,7 @@ def health():
 
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
+    # استفاده از debug=False و use_reloader=False برای جلوگیری از مشکلات threading
     app_flask.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # ========== توابع ربات (همان کدهای خودتان) ==========
@@ -64,15 +65,14 @@ async def start_command(update: Update, context):
 async def cancel_command(update: Update, context):
     await update.message.reply_text("لغو شد.")
 
-# ========== تابع اصلی (async) ==========
-async def main():
+# ========== تابع اصلی ==========
+def main():
     if not TELEGRAM_BOT_TOKEN:
         logging.error("TELEGRAM_BOT_TOKEN یافت نشد!")
         return
 
     _check_access_config()
 
-    # ساخت اپلیکیشن تلگرام
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
@@ -97,20 +97,33 @@ async def main():
     scheduler.add_job(check_reminders_task, 'interval', minutes=5)
     scheduler.add_job(_cleanup_temp_files, 'interval', hours=1)
     scheduler.add_job(log_metrics_task, 'interval', minutes=5)
-    # ... بقیه jobها ...
-
     scheduler.start()
 
     # ======== راه‌اندازی وب‌سرویس Flask در یک ترد جداگانه ========
     thread = threading.Thread(target=run_web_server, daemon=True)
     thread.start()
 
-    # ======== پاک کردن Webhook قبل از شروع پولینگ ========
-    # این کار از خطای Conflict جلوگیری می‌کند
-    await application.bot.delete_webhook(drop_pending_updates=True)
+    # ======== راه‌اندازی ربات با مدیریت دستی حلقه رویداد ========
+    # یک حلقه رویداد جدید ایجاد می‌کنیم
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    # ======== اجرای پولینگ تلگرام ========
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        # پاک کردن webhookهای قبلی برای جلوگیری از خطای Conflict
+        loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
+        # اجرای پولینگ با گزینه close_loop=False تا حلقه بسته نشود
+        # این کار از بروز خطای "Event loop is closed" جلوگیری می‌کند [reference:7][reference:8]
+        loop.run_until_complete(application.run_polling(allowed_updates=Update.ALL_TYPES))
+    except KeyboardInterrupt:
+        logging.info("ربات توسط کاربر متوقف شد.")
+    finally:
+        # پاکسازی و بستن حلقه
+        try:
+            loop.run_until_complete(application.shutdown())
+        except Exception as e:
+            logging.warning(f"خطا در زمان خاموش کردن اپلیکیشن: {e}")
+        finally:
+            loop.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
