@@ -129,7 +129,7 @@ async def handle_message(update: Update, context):
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "llama-3.1-70b-versatile",
+                "model": "llama-3.3-70b-versatile",
                 "messages": [{"role": "user", "content": user_message}]
             }
         
@@ -140,18 +140,18 @@ async def handle_message(update: Update, context):
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "grok-2-1212",
+                "model": "grok-4.3",
                 "messages": [{"role": "user", "content": user_message}]
             }
         
         elif selected_model == "zai":
-            url = "https://api.z.ai/v1/chat/completions"
+            url = "https://api.z.ai/api/paas/v4/chat/completions"
             headers = {
                 "Authorization": f"Bearer {ZAI_API_KEY}",
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "zai-1",
+                "model": "glm-5.2",
                 "messages": [{"role": "user", "content": user_message}]
             }
         
@@ -160,7 +160,6 @@ async def handle_message(update: Update, context):
             return
         
         logger.info(f"ارسال درخواست به {url}")
-        logger.info(f"Payload: {json.dumps(payload)}")
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(url, headers=headers, json=payload)
