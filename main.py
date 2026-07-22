@@ -34,14 +34,6 @@ def set_scheduler(scheduler, application):
     # ... کد خودتان ...
     pass
 
-def post_init(application):
-    # ... کد خودتان ...
-    pass
-
-def post_shutdown(application):
-    # ... کد خودتان ...
-    pass
-
 def entry_points():
     return [CommandHandler("start", start_command)]
 
@@ -71,7 +63,7 @@ async def start_command(update: Update, context):
 async def cancel_command(update: Update, context):
     await update.message.reply_text("لغو شد.")
 
-# ========== تابع اصلی (غیر async) ==========
+# ========== تابع اصلی ==========
 def main():
     if not TELEGRAM_BOT_TOKEN:
         logging.error("TELEGRAM_BOT_TOKEN یافت نشد!")
@@ -79,12 +71,10 @@ def main():
 
     _check_access_config()
 
-    # ساخت اپلیکیشن تلگرام
+    # ساخت اپلیکیشن تلگرام (بدون post_init و post_shutdown)
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
         .build()
     )
 
@@ -114,7 +104,7 @@ def main():
     thread = threading.Thread(target=run_web_server, daemon=True)
     thread.start()
 
-    # ======== اجرای پولینگ تلگرام (بدون await) ========
+    # ======== اجرای پولینگ تلگرام ========
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
